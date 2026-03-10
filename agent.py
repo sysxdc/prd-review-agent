@@ -49,10 +49,11 @@ SYSTEM_PROMPT = """你是一个专业的产品需求评审助手。
 def assistant(state: PRDState):
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
     response = llm_with_tools.invoke(messages)
-    return {"messages": response}
+    return {"messages": [response]}
 
 # 构建图
 def build_graph():
+    os.makedirs("state_db", exist_ok=True)
     conn = sqlite3.connect("state_db/prd_agent.db", check_same_thread=False)
     memory = SqliteSaver(conn)
     

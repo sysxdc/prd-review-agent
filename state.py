@@ -1,19 +1,18 @@
-from typing import Annotated
-from pydantic import BaseModel
+from typing_extensions import NotRequired
 from langgraph.graph import MessagesState
 
 class PRDState(MessagesState):
     # PRD原文
-    prd_content: str
+    prd_content: NotRequired[str]
     # 完整性评分
-    completeness_score: int
+    completeness_score: NotRequired[int]
     # 缺失的字段
-    missing_fields: list
+    missing_fields: NotRequired[list[str]]
     # 拆解出的用户故事
-    user_stories: list
+    user_stories: NotRequired[list[str]]
     # 识别出的风险
-    risks: list
+    risks: NotRequired[list[str]]
     # 对话摘要
-    summary: str
+    summary: NotRequired[str]
     # 当前执行步骤
-    current_step: str
+    current_step: NotRequired[str]

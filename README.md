@@ -23,6 +23,7 @@ LangGraph + DeepSeek API + SQLite + Streamlit
 [待补充]
 
 ## 快速开始
+```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
