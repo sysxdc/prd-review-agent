@@ -129,13 +129,8 @@ def retrieve_standards(query: str, category: str = None, k: int = 3) -> list[str
     :param k: 返回条数
     """
     store = _get_standards_store()
-    # langchain-chroma 单条件直接传字段名即可，多条件才需要 $and
-    if category:
-        filter_dict = {"category": category}
-    else:
-        filter_dict = None
-
-    results = store.similarity_search(query, k=k, filter=filter_dict)
+    # 知识库只有5条，直接语义搜索，查询语句本身已能区分category
+    results = store.similarity_search(query, k=k)
     return [doc.page_content for doc in results]
 
 
