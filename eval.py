@@ -109,8 +109,11 @@ class EvalResult:
     checks: list[dict] = field(default_factory=list)
     passed: int = 0
     total: int = 0
-    raw_report: str = ""
+    raw_report: str = ""           # 最终报告（经过 Reflection 修正后）
+    first_report: str = ""         # 第一次生成的报告（Reflection 触发前）
     latency_seconds: float = 0.0
+    reflection_triggered: bool = False   # 是否触发了 Reflection 重试
+    reflection_retries: int = 0          # 触发次数（最多 2）
 
     @property
     def pass_rate(self):
@@ -118,11 +121,19 @@ class EvalResult:
 
 
 # ── 核心评估函数 ──────────────────────────────────────────────────────────
-def run_agent_on_prd(prd_content: str) -> tuple[str, float]:
-    """运行 agent，返回（评审报告文本, 耗时秒数）"""
-    # 直接用 judge_llm 模拟 agent 输出（eval 独立于 agent，避免循环依赖）
-    # 生产环境可以改为直接调用 graph.invoke(...)
+def run_agent_on_prd(prd_content: str) -> tuple[str, float, dict]:
+    """
+    运行 agent，返回三元组：
+      - 最终报告文本（经过 Reflection 修正后的最终版本）
+      - 耗时秒数
+      - reflection_info 字典：{
+            "triggered": bool,       # 是否触发了重试
+            "retries": int,          # 重试次数
+            "first_report": str,     # 第一次生成的报告原文
+        }
+    """
     from agent import graph
+    from langchain_core.messages import AIMessage, ToolMessage
 
     start = time.time()
     config = {"configurable": {"thread_id": f"eval_{int(time.time())}"}}
@@ -132,14 +143,34 @@ def run_agent_on_prd(prd_content: str) -> tuple[str, float]:
     )
     elapsed = time.time() - start
 
-    # 取最后一条 AI 消息
-    from langchain_core.messages import AIMessage
-    report = ""
-    for msg in reversed(result["messages"]):
-        if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
-            report = msg.content
-            break
-    return report, elapsed
+    messages = result["messages"]
+
+    # ── 收集所有完整评审报告（非工具调用的 AIMessage，长度 > 200）
+    ai_reports = [
+        msg.content
+        for msg in messages
+        if isinstance(msg, AIMessage)
+        and not getattr(msg, "tool_calls", None)
+        and len(msg.content) > 200
+    ]
+
+    # ── 检测 Reflection 重试次数（HumanMessage 含触发标记）
+    retry_messages = [
+        msg for msg in messages
+        if isinstance(msg, HumanMessage) and "评审报告需要改进" in msg.content
+    ]
+    retries = len(retry_messages)
+
+    final_report = ai_reports[-1] if ai_reports else ""
+    first_report = ai_reports[0] if ai_reports else ""
+
+    reflection_info = {
+        "triggered": retries > 0,
+        "retries": retries,
+        "first_report": first_report,
+    }
+
+    return final_report, elapsed, reflection_info
 
 
 def llm_judge_report(report: str, prd: str, expected: dict) -> dict:
@@ -180,9 +211,15 @@ def evaluate_case(case: dict) -> EvalResult:
     result = EvalResult(case_name=case["name"])
 
     # 运行 agent
-    report, latency = run_agent_on_prd(case["prd"])
+    report, latency, reflection_info = run_agent_on_prd(case["prd"])
     result.raw_report = report
+    result.first_report = reflection_info["first_report"]
     result.latency_seconds = latency
+    result.reflection_triggered = reflection_info["triggered"]
+    result.reflection_retries = reflection_info["retries"]
+
+    if result.reflection_triggered:
+        print(f"   🔄 Reflection 触发了 {result.reflection_retries} 次重试")
 
     # 用 LLM 从报告中提取数据
     extracted = llm_judge_report(report, case["prd"], case["expected"])
@@ -260,23 +297,42 @@ def print_report(results: list[EvalResult]):
 
     for r in results:
         icon = "✅" if r.pass_rate >= 0.75 else "⚠️" if r.pass_rate >= 0.5 else "❌"
-        print(f"\n{icon}  {r.case_name}  ({r.passed}/{r.total} checks, {r.latency_seconds:.1f}s)")
+        reflection_tag = f" | 🔄 Reflection×{r.reflection_retries}" if r.reflection_triggered else " | Reflection未触发"
+        print(f"\n{icon}  {r.case_name}  ({r.passed}/{r.total} checks, {r.latency_seconds:.1f}s{reflection_tag})")
         for check in r.checks:
             status = "✅" if check["passed"] else "❌"
             print(f"   {status} {check['name']}: {check['value']}  (期望: {check['expected']})")
+
+        # ── 打印 Reflection before/after 对比 ──
+        if r.reflection_triggered and r.first_report and r.raw_report:
+            print(f"\n   📝 Reflection Before/After 对比：")
+            before_snippet = r.first_report[:120].replace("\n", " ").strip()
+            after_snippet  = r.raw_report[:120].replace("\n", " ").strip()
+            print(f"   ├─ 修正前：{before_snippet}…")
+            print(f"   └─ 修正后：{after_snippet}…")
+
+    # ── Reflection 汇总统计 ──
+    triggered_count = sum(1 for r in results if r.reflection_triggered)
+    total_retries   = sum(r.reflection_retries for r in results)
+    print("\n" + "-" * 55)
+    print(f"Reflection 统计：{triggered_count}/{len(results)} 个用例触发，共重试 {total_retries} 次")
+    if triggered_count == 0:
+        print("  → 所有用例首次通过，Reflection 机制待更多测试用例覆盖")
+    else:
+        print(f"  → Reflection 修正率：{triggered_count/len(results)*100:.0f}% 的用例被自动优化")
 
     print("\n" + "-" * 55)
     overall = total_passed / total_checks * 100 if total_checks > 0 else 0
     print(f"总体通过率: {total_passed}/{total_checks}  ({overall:.1f}%)")
     avg_latency = sum(r.latency_seconds for r in results) / len(results)
-    print(f"平均响应时间: {avg_latency:.1f}s")
+    print(f"平均响应时间: {avg_latency:.1f}s（3工具并行，实际耗时 ≈ max(单工具) 而非 sum）")
     print("=" * 55)
 
-    # 生成可贴进 README 的 badge 数据
     print(f"\n📋 README Badge 数据（复制粘贴用）：")
     print(f"- Eval 通过率：{overall:.0f}%")
     print(f"- 平均响应时间：{avg_latency:.0f}s")
     print(f"- 测试用例：{len(results)} 个场景，{total_checks} 项检查")
+    print(f"- Reflection 触发：{triggered_count}/{len(results)} 个用例，共重试 {total_retries} 次")
 
 
 if __name__ == "__main__":
