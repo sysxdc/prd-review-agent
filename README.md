@@ -1,80 +1,139 @@
-# PRD需求评审Agent
+# PRD Review Agent
 
-> 上传产品需求文档，60秒获得专业评审报告
+> 基于 RAG 增强 + LLM-as-Judge 自修正的智能需求评审系统
 
-## 在线Demo
-🔗 [立即体验](https://prd-review-agent-hsw3pyajndptpvzuacvxsd.streamlit.app/)
+🔗 [在线体验](https://prd-review-agent-hsw3pyajndptpvzuacvxsd.streamlit.app/) &nbsp;|&nbsp; 上传 PRD 文档，90 秒获得结构化评审报告
 
 ![Demo演示](动画.gif)
 
+---
+
 ## 解决什么问题
 
-产品评审会议平均返工2-3次，核心原因是需求描述不清晰、
-验收标准缺失、技术风险未识别。
+产品评审会议平均返工 2-3 次，核心原因是需求描述不清晰、验收标准缺失、技术风险未识别。
 
-本项目用AI Agent自动完成评审工作，输出结构化报告。
+传统做法依赖人工经验，效率低且标准不一致。本项目用 AI Agent 自动完成评审工作：工具内部通过 RAG 召回行业规范作为评判依据，输出结构化报告，并通过 Reflection 机制对报告质量做二次验证。
 
-## 核心功能
-
-- ✅ 需求完整性检测（8个维度）
-- ✅ PRD质量评分（0-100分）
-- ✅ 自动拆解用户故事
-- ✅ 技术风险识别
-- ✅ 多轮追问，持续对话
-- ✅ 对话历史持久化（SQLite）
-
-## 测试数据
-
-测试文档见 [test_cases](./test_cases) 文件夹，可直接下载上传体验。
-
-| 文档类型 | 完整性评分 | 识别缺失字段数 | 生成用户故事数 |
-|--------|---------|------------|------------|
-| 低质量PRD（社交APP） | 25/100 | 6个 | 3条 |
-| 中等质量PRD（电商平台） | 40/100 | 6个 | 4条 |
-| 高质量PRD（知识库系统） | 65/100 | 10个 | 3条 |
-
-评分梯度清晰，能准确区分PRD质量高低。
+---
 
 ## 系统架构
 
+```
+用户上传 PRD
+      ↓
+ assistant（主分析节点）
+      ↓ 调用工具（内部 RAG 增强）
+ ┌────┼────┐
+ ↓    ↓    ↓
+完整性 用户  风险
+检测  故事  识别
+ └────┼────┘
+      ↓ 综合三个工具结果生成报告
+ reflection（LLM-as-Judge 质量验证）
+      ↓ 不合格则重试，最多 2 次
+    最终报告 + 历史库写入
+```
+
 ![架构图](architecture.png)
+
+### RAG 双层知识库
+
+| 知识库 | 内容 | 作用 |
+|---|---|---|
+| 行业规范库 | PRD完整性标准、用户故事INVEST原则、风险识别清单、评分体系、常见缺陷模式 | 每次工具调用时 RAG 召回，作为 LLM 的评判依据 |
+| 历史评审库 | 每次评审完自动写入 | 下次评审相似 PRD 时召回历史案例作参考 |
+
+---
+
+## 核心功能
+
+- ✅ **RAG 增强评审**：工具调用时从行业规范知识库检索相关标准，LLM 对照规范分析，而非自由发挥
+- ✅ **Reflection 自修正**：LLM-as-Judge 对评审报告做质量验证，不合格自动重试（上限 2 次）
+- ✅ **需求完整性检测**：对照 8 个维度逐一检查，给出 0-100 评分和缺失原因
+- ✅ **用户故事规范化**：自动提取并按 INVEST 原则规范化，附带可量化验收标准（AC）
+- ✅ **技术风险识别**：覆盖高危/中危风险和常见需求缺陷模式
+- ✅ **多轮追问**：持续对话，支持针对报告的深度追问
+- ✅ **对话历史持久化**：基于 LangGraph SqliteSaver，会话状态跨请求保持
+
+---
+
+## 评估结果（Eval Pipeline）
+
+使用 LLM-as-Judge 自动化评估 Pipeline，对 3 个梯度测试用例、12 项检查项进行验证：
+
+| 测试用例 | 完整性评分 | 缺失字段识别数 | 用户故事数 | 风险关键词覆盖 |
+|---|---|---|---|---|
+| 低质量PRD（社交APP） | 20/100 ✅ | 8个 ✅ | 3条 ✅ | 并发/数据/安全/隐私 ✅ |
+| 中等质量PRD（电商平台） | 30/100 ✅ | 8个 ✅ | 5条 ✅ | 库存/超卖/并发/支付 ✅ |
+| 高质量PRD（知识库系统） | 45/100 ❌ | 7个 ✅ | 4条 ✅ | 搜索/权限/安全/隐私 ✅ |
+
+**总体通过率：11/12（91.7%）**  
+**平均响应时间：97s**（3个工具串行调用 + Reflection 验证）
+
+> 唯一失败项：高质量PRD评分偏低（45 vs 期望 55+），Agent 对完整 PRD 存在过度扣分的倾向，待优化评分 prompt。
+
+---
+
+## 可观测性（LangSmith）
+
+接入 LangSmith 实现全链路追踪，可视化每次评审的 Agent 调用链、token 消耗和节点延迟。
+
+![LangSmith调用链](langsmith_trace.png)
+![LangSmith时序图](langsmith_time_trace.png)
+
+每次评审完整执行 8 个 graph steps：assistant → tools（×3）→ assistant（生成报告）→ reflection，单次消耗约 13.5K tokens。
+
+---
 
 ## 技术栈
 
 | 模块 | 技术 |
-|------|------|
-| Agent框架 | LangGraph |
+|---|---|
+| Agent 框架 | LangGraph（StateGraph + SqliteSaver checkpointer）|
 | 大模型 | DeepSeek API |
-| 持久化 | SQLite |
+| RAG 向量库 | ChromaDB + langchain-chroma |
+| Embedding | BAAI/bge-m3（SiliconFlow）|
+| 评估框架 | LLM-as-Judge（自研 eval.py）|
+| 可观测性 | LangSmith |
 | 界面 | Streamlit |
 | 文档解析 | PyPDF |
 
+---
+
 ## 快速开始
 
-\```bash
+```bash
 # 1. 克隆项目
 git clone https://github.com/sysxdc/prd-review-agent.git
 cd prd-review-agent
 
 # 2. 配置环境变量
 cp .env.example .env
-# 填入你的 DEEPSEEK_API_KEY
+# 填入 DEEPSEEK_API_KEY、OPENAI_API_KEY（SiliconFlow key）、EMBED_BASE_URL
 
-# 3. 安装依赖并运行
+# 3. 安装依赖
 pip install -r requirements.txt
+
+# 4. 初始化 RAG 知识库（首次运行）
+python -c "from rag_store import _get_standards_store; _get_standards_store()"
+
+# 5. 启动
 streamlit run app.py
-\```
+```
+
+---
 
 ## 踩坑记录
 
-**坑1：PDF解析乱码**
-直接用decode()读取PDF会乱码，改用pypdf库解析后解决。
+**坑1：PDF解析乱码**  
+直接用 decode() 读取 PDF 会乱码，改用 pypdf 库解析后解决。
 
-**坑2：对话历史重复输出**
-Agent返回所有消息记录，只取最后一条AIMessage解决。
+**坑2：对话历史重复输出**  
+Agent 返回所有消息记录，只取最后一条 AIMessage 解决。
 
-**坑3：SQLite路径报错**
-state_db文件夹不存在导致报错，手动创建文件夹解决。
+**坑3：ChromaDB filter 语法报错**  
+`langchain-community` 的 Chroma 已废弃，且新版 ChromaDB 多条件 filter 需用 `$and` 包裹。
+升级为 `langchain-chroma` 并使用单字段 filter 后解决。
 
-**坑4：Streamlit Cloud部署失败**
-requirements.txt包含整个Python环境导致安装失败，精简为只保留项目依赖解决。
+**坑4：Streamlit Cloud 部署失败**  
+requirements.txt 包含整个 Python 环境导致安装失败，精简为只保留项目依赖解决。

@@ -16,3 +16,5 @@ class PRDState(MessagesState):
     summary: NotRequired[str]
     # 当前执行步骤
     current_step: NotRequired[str]
+    # Reflection 重试次数（防止无限循环，上限2次）
+    retry_count: NotRequired[int]

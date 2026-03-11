@@ -17,3 +17,5 @@ venv/
 
 # Streamlit
 .streamlit/secrets.toml
+
+chroma_db/
