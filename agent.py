@@ -1,11 +1,5 @@
 """
 agent.py — 并行工具调用 + 流式输出 + Reflection + LangSmith
-
-改造点：
-1. 工具并行执行（ThreadPoolExecutor），响应时间从 ~97s 降至 ~35s
-2. 新增 stream_graph_updates() 供 app.py 流式输出使用
-3. 统一路由，移除重复的 tools_condition
-4. Reflection prompt 优化：高质量PRD不再过度扣分
 """
 
 import os
@@ -81,12 +75,9 @@ def assistant(state: PRDState):
     return {"messages": [response]}
 
 
-# ── 节点2：parallel_tools（并行执行所有工具）─────────────────────────────
+# ── 节点2：parallel_tools ─────────────────────────────────────────────────
 def parallel_tools(state: PRDState):
-    """
-    并发执行所有工具调用。
-    响应时间从 sum(各工具耗时) 降为 max(各工具耗时)，约节省 60% 时间。
-    """
+    """并发执行所有工具，响应时间从 sum(各工具) 降为 max(各工具)"""
     last_message = state["messages"][-1]
     tool_calls = getattr(last_message, "tool_calls", [])
     if not tool_calls:
@@ -104,11 +95,11 @@ def parallel_tools(state: PRDState):
                 output = future.result()
             except Exception as e:
                 output = f"工具执行出错：{str(e)}"
-            results[call["id"]] = (call["name"], output)
+            results[call["id"]] = output
 
     tool_messages = [
         ToolMessage(
-            content=str(results.get(call["id"], (call["name"], "执行失败"))[1]),
+            content=str(results.get(call["id"], "执行失败")),
             tool_call_id=call["id"],
             name=call["name"],
         )
@@ -137,7 +128,7 @@ REFLECTION_PROMPT = """你是一个严格但公正的质量审核员。请检查
 4. 是否包含风险识别内容
 5. 内容是否具体，而非泛泛而谈
 
-评分参考（请用于判断报告中的分数是否合理，不要求强制修改）：
+评分参考（判断报告中的分数是否合理）：
 - 高质量PRD（模块齐全、有AC、有风险应对）：55-90分
 - 中等质量PRD（核心模块存在但不完整）：30-65分
 - 低质量PRD（大量模块缺失）：0-40分
@@ -200,16 +191,46 @@ def reflection(state: PRDState):
 
 
 def _save_to_history(state: PRDState, report_content: str):
-    prd_content = state.get("prd_content", "")
-    if not prd_content:
+    """
+    Bug fix：从消息历史提取PRD内容，而不是依赖 state["prd_content"]
+    state["prd_content"] 从未被写入，原来的实现导致历史库永远为空
+    """
+    prd_summary = ""
+    prefix = "请分析这份PRD文档：\n\n"
+    for msg in state["messages"]:
+        if isinstance(msg, HumanMessage) and prefix in msg.content:
+            prd_summary = msg.content[len(prefix):len(prefix)+150]
+            break
+
+    if not prd_summary:
         return
+
+    # 从工具结果中提取结构化数据写入历史库
+    score = 0
+    missing_fields = []
+    risks = []
+    user_stories = []
+    for msg in state["messages"]:
+        if isinstance(msg, ToolMessage):
+            try:
+                data = json.loads(msg.content)
+                if "score" in data:
+                    score = data["score"]
+                    missing_fields = data.get("missing_fields", [])
+                if "risks" in data:
+                    risks = [r.get("description", "") for r in data.get("risks", [])]
+                if "user_stories" in data:
+                    user_stories = [s.get("story", "") for s in data.get("user_stories", [])]
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
     save_review_to_history(
-        prd_content[:150],
+        prd_summary,
         {
-            "score": state.get("completeness_score", 0),
-            "missing_fields": state.get("missing_fields", []),
-            "risks": state.get("risks", []),
-            "user_stories": state.get("user_stories", []),
+            "score": score,
+            "missing_fields": missing_fields,
+            "risks": risks,
+            "user_stories": user_stories,
             "conclusion": report_content[:300],
         },
     )
@@ -257,26 +278,29 @@ def build_graph():
 graph = build_graph()
 
 
-# ── 流式输出接口（供 app.py 调用）────────────────────────────────────────
+# ── 流式输出（供 app.py 调用）────────────────────────────────────────────
 def stream_graph_updates(user_message: str, config: dict):
     """
-    流式执行 graph，逐 token yield 最终报告内容。
-
-    app.py 使用方式：
-        with st.chat_message("assistant"):
-            response = st.write_stream(
-                stream_graph_updates(user_input, config)
-            )
+    流式执行 graph，yield 最终报告的每个 token。
+    Reflection 重试时只流式输出最后一次生成的报告，避免重复内容。
     """
     input_state = {"messages": [HumanMessage(content=user_message)]}
+    in_final_report = False  # 标记是否进入最终报告生成阶段
+
     for event in graph.stream(input_state, config, stream_mode="messages"):
-        if isinstance(event, tuple):
-            msg_chunk, metadata = event
-            node = metadata.get("langgraph_node", "")
-            if (
-                node == "assistant"
-                and hasattr(msg_chunk, "content")
-                and msg_chunk.content
-                and not getattr(msg_chunk, "tool_calls", None)
-            ):
+        if not isinstance(event, tuple):
+            continue
+        msg_chunk, metadata = event
+        node = metadata.get("langgraph_node", "")
+
+        # reflection 节点执行完后，下一个 assistant 才是最终报告
+        if node == "reflection":
+            in_final_report = True
+            continue
+
+        if node == "assistant":
+            # 跳过 tool_call 阶段的 assistant（第一次调用工具时）
+            if getattr(msg_chunk, "tool_calls", None):
+                continue
+            if hasattr(msg_chunk, "content") and msg_chunk.content:
                 yield msg_chunk.content

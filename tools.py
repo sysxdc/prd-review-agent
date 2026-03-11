@@ -35,12 +35,10 @@ def check_completeness(prd_content: str) -> str:
     # Step 1: 召回相关规范
     standards = retrieve_standards(
         query="PRD完整性检查 必须包含哪些模块",
-        category="completeness",
         k=2,
     )
     scoring_std = retrieve_standards(
         query="PRD评分标准 100分",
-        category="scoring",
         k=1,
     )
     all_standards = standards + scoring_std
@@ -92,7 +90,6 @@ def extract_user_stories(prd_content: str) -> str:
     """
     standards = retrieve_standards(
         query="用户故事 INVEST原则 写作规范 格式",
-        category="user_story",
         k=2,
     )
     standards_text = "\n\n".join(standards)
@@ -140,12 +137,10 @@ def identify_risks(prd_content: str) -> str:
     """
     risk_standards = retrieve_standards(
         query="技术风险识别 第三方依赖 数据安全 高并发",
-        category="risk",
         k=2,
     )
     defect_standards = retrieve_standards(
         query="PRD常见缺陷 需求不可测试 边界条件缺失",
-        category="defects",
         k=1,
     )
     standards_text = "\n\n".join(risk_standards + defect_standards)

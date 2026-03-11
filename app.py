@@ -2,7 +2,7 @@ import streamlit as st
 import pypdf
 import io
 import uuid
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
 from agent import graph, stream_graph_updates
 
 st.title("PRD 需求评审 Agent")
@@ -77,18 +77,18 @@ if uploaded_file and not st.session_state.analyzed:
 # ── 追问输入（始终显示，分析前也可以直接提问）──────────────────────────────
 user_input = st.chat_input("上传文档后可继续追问...")
 if user_input:
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
-        # 追问也用流式
-        with st.chat_message("assistant"):
-            response = st.write_stream(
-                stream_graph_updates(user_input, config)
-            )
+    # 追问也用流式
+    with st.chat_message("assistant"):
+        response = st.write_stream(
+            stream_graph_updates(user_input, config)
+        )
 
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": response,
-        })
-        st.rerun()
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": response,
+    })
+    st.rerun()

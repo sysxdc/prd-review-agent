@@ -2,7 +2,7 @@
 
 > 基于 RAG 增强 + LLM-as-Judge 自修正的智能需求评审系统
 
-🔗 [在线体验](https://prd-review-agent-hsw3pyajndptpvzuacvxsd.streamlit.app/) &nbsp;|&nbsp; 上传 PRD 文档，90 秒获得结构化评审报告
+上传 PRD 文档，自动获得结构化评审报告
 
 ![Demo演示](动画.gif)
 
